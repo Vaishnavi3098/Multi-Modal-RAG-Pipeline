@@ -1,0 +1,164 @@
+# Multi-Modal RAG Pipeline Configuration
+# Copy to config.yaml and fill in secrets via environment variables
+
+project:
+  name: multimodal-rag
+  version: "1.0.0"
+  environment: development   # development | staging | production
+
+paths:
+  raw_docs: data/raw
+  processed: data/processed
+  images: data/images
+  document_store: data/document_store.jsonl   # simple versioned store; replace with S3/Postgres in prod
+
+ingestion:
+  libraries:
+    primary: pymupdf          # text + images
+    tables: pdfplumber        # high-quality table extraction
+  clean:
+    normalize_whitespace: true
+    remove_headers_footers: true
+    min_text_length: 20
+  deduplication:
+    enabled: true
+    method: content_hash      # content_hash | minhash
+    similarity_threshold: 0.92
+  versioning:
+    strategy: content_hash_semver
+    keep_history: true
+  images:
+    extract: true
+    min_width: 50
+    min_height: 50
+    save_format: png
+  tables:
+    extract: true
+    output_format: markdown   # markdown | csv | json
+  retries:
+    max_attempts: 3
+    backoff_factor: 2.0
+
+chunking:
+  strategy: adaptive          # adaptive | recursive | semantic
+  recursive:
+    chunk_size: 800           # tokens
+    chunk_overlap: 120
+    separators: ["\n\n", "\n", ". ", " ", ""]
+  semantic:
+    model: local              # or embedding model name
+    similarity_threshold: 0.75
+  table_handling: keep_intact # keep_intact | split_rows
+  image_handling: caption_and_link
+  max_chunk_tokens: 1024
+
+embeddings:
+  provider: local             # local | gemini | openai | groq
+  models:
+    local: "sentence-transformers/all-MiniLM-L6-v2"
+    gemini: "models/text-embedding-004"
+    openai: "text-embedding-3-large"
+  batch_size: 32
+  multimodal:
+    enabled: true
+    image_model: null         # e.g. CLIP or Gemini multimodal
+  reembed_on_change: true
+
+vectorstore:
+  backend: chroma             # chroma | pinecone
+  chroma:
+    persist_directory: data/chroma_db
+    collection_name: multimodal_rag
+  pinecone:
+    index_name: multimodal-rag
+    environment: us-east-1
+    # api_key via PINECONE_API_KEY
+  distance_metric: cosine
+  namespace_by_tenant: true
+
+retrieval:
+  hybrid:
+    enabled: true
+    dense_weight: 0.7
+    sparse_weight: 0.3
+  top_k: 20
+  reranker:
+    enabled: true
+    provider: local           # local | cohere | bge
+    model: "BAAI/bge-reranker-base"
+    top_n: 5
+  cache:
+    enabled: true
+    backend: memory           # memory | redis
+    ttl_seconds: 3600
+    max_size: 1000
+  filters:
+    default_content_types: ["text", "table", "image_caption"]
+
+memory:
+  short_term:
+    max_turns: 10
+    max_tokens: 4000
+  long_term:
+    backend: sqlite           # sqlite | postgres
+    path: data/memory.db
+    retention_days: 90
+  multi_tenant: true
+  isolation_key: tenant_id
+
+llm:
+  provider: groq            # gemini | groq | openai
+  models:
+    gemini: "gemini-1.5-pro"
+    groq: "llama-3.3-70b-versatile"
+  temperature: 0.2
+  max_tokens: 2048
+  streaming: true
+  system_prompt_template: |
+    You are a precise, grounded assistant answering questions about AI risk frameworks,
+    OWASP LLM security, and corporate sustainability reports.
+    Use ONLY the provided retrieval context and conversation memory.
+    Cite sources with [doc:page] markers.
+    If the context is insufficient, say so clearly.
+    Never invent facts.
+  response_validation:
+    enabled: true
+    require_citations: true
+    max_hallucination_score: 0.3
+
+guardrails:
+  prompt_injection:
+    enabled: true
+    block_threshold: 0.8
+  pii_filter:
+    enabled: true
+    redaction_token: "[REDACTED]"
+  sensitive_topics:
+    - financial_advice
+    - medical_advice
+  output_moderation: true
+
+observability:
+  logging:
+    level: INFO
+    format: json
+  tracing:
+    enabled: true
+    exporter: console         # console | otlp | langsmith
+  metrics:
+    track_ingestion: true
+    track_retrieval_latency: true
+    track_response_quality: true
+  alerts:
+    failure_rate_threshold: 0.05
+    latency_p95_ms: 3000
+
+evaluation:
+  metrics: [precision_at_k, recall_at_k, mrr, ndcg]
+  k_values: [1, 3, 5, 10]
+  gold_set_path: tests/data/gold_qa.jsonl
+
+security:
+  encrypt_at_rest: false      # enable with KMS in production
+  audit_log: true
+  max_request_size_mb: 50
